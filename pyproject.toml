@@ -14,5 +14,10 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.uv]
-dev-dependencies = []
+[tool.hatch.build.targets.wheel]
+py-modules = ["model", "train", "chat"]
+include = [
+    "README.md",
+    "data/**",
+    "checkpoints/.gitkeep"
+]
