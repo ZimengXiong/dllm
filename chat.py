@@ -43,7 +43,7 @@ def chat(model: TransformerChatModel, tokenizer: SimpleTokenizer, device: torch.
 
 def main():
     parser = argparse.ArgumentParser(description="Chat with a trained model")
-    parser.add_argument("--checkpoint", type=str, default="checkpoints/best_model.pt", help="Path to model checkpoint")
+    parser.add_argument("--checkpoint", type=str, default="checkpoints/final_model.pt", help="Path to model checkpoint")
     parser.add_argument("--tokenizer", type=str, default="checkpoints/tokenizer.json", help="Path to tokenizer file")
     parser.add_argument("--max-length", type=int, default=200, help="Maximum length of generated response")
     parser.add_argument("--temperature", type=float, default=0.8, help="Temperature for sampling")
