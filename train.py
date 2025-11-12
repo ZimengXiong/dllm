@@ -169,10 +169,18 @@ def train(model, train_loader, val_loader, optimizer, criterion, device, args, t
             })
             
             # Evaluation
+            # In the train() function, replace the evaluation block with:
+
+            # Evaluation
             if global_iter % eval_interval == 0 or global_iter == total_iterations:
                 if val_loader is not None:
                     val_loss = evaluate_model(model, val_loader, criterion, device)
                     progress_bar.write(f"[Iter {global_iter}] Train: {running_loss/running_count:.4f} | Val: {val_loss:.4f}")
+                    
+                    # Sample generation
+                    model.eval()
+                    sample_text = model.generate(tokenizer, "Hello", max_length=50, temperature=0.8, device=device)
+                    progress_bar.write(f"[Iter {global_iter}] Sample - Hello -> {sample_text}")
                     
                     if val_loss < best_val_loss:
                         best_val_loss = val_loss
@@ -182,10 +190,16 @@ def train(model, train_loader, val_loader, optimizer, criterion, device, args, t
                         progress_bar.write(f"[Iter {global_iter}] New best model saved (val_loss: {val_loss:.4f})")
                 else:
                     progress_bar.write(f"[Iter {global_iter}] Train: {running_loss/running_count:.4f}")
+                    
+                    # Sample generation even without validation set
+                    model.eval()
+                    sample_text = model.generate(tokenizer, "Hello", max_length=50, temperature=0.8, device=device)
+                    progress_bar.write(f"[Iter {global_iter}] Sample - Hello -> {sample_text}")
                 
                 running_loss = 0
                 running_count = 0
                 model.train()
+
             
             # Checkpoint saving
             if global_iter % checkpoint_interval == 0 or global_iter == total_iterations:
