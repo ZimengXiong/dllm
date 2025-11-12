@@ -1,278 +1,257 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import json
-from pathlib import Path
+import math
 
 
-def get_device():
-    """
-    Automatically detect and return the best available device.
-    Priority: CUDA > MPS (Apple Silicon) > CPU
-    """
-    if torch.cuda.is_available():
-        return torch.device("cuda")
-    elif torch.backends.mps.is_available():
-        return torch.device("mps")
-    else:
-        return torch.device("cpu")
-
-
-class SimpleTokenizer:
-    """A simple character-level tokenizer."""
+class PositionalEncoding(nn.Module):
+    """Sinusoidal positional encoding for transformer."""
     
-    def __init__(self, vocab=None):
-        self.special_tokens = ['<PAD>', '<UNK>', '<BOS>', '<EOS>', '<SEP>']
+    def __init__(self, d_model, max_seq_length=512):
+        super().__init__()
         
-        if vocab is None:
-            # Default vocab: common characters
-            chars = list("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 .,!?;:'\"-\n")
-            self.char_to_idx = {ch: i for i, ch in enumerate(chars)}
-            self.idx_to_char = {i: ch for i, ch in enumerate(chars)}
-            
-            # Add special tokens if not present
-            for token in self.special_tokens:
-                if token not in self.char_to_idx:
-                    idx = len(self.char_to_idx)
-                    self.char_to_idx[token] = idx
-                    self.idx_to_char[idx] = token
-        else:
-            self.char_to_idx = vocab['char_to_idx']
-            self.idx_to_char = {int(k): v for k, v in vocab['idx_to_char'].items()}
-            self.special_tokens = vocab.get('special_tokens', self.special_tokens)
+        pe = torch.zeros(max_seq_length, d_model)
+        position = torch.arange(0, max_seq_length, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term)
+        
+        self.register_buffer('pe', pe.unsqueeze(0))
     
-    @property
-    def vocab_size(self):
-        return len(self.char_to_idx)
-    
-    def encode(self, text):
-        return [self.char_to_idx.get(ch, self.char_to_idx['<UNK>']) for ch in text]
-    
-    def decode(self, indices):
-        return ''.join([self.idx_to_char.get(idx, '<UNK>') for idx in indices])
-    
-    def add_text(self, text):
-        """Expand vocabulary with characters from the given text."""
-        added = False
-        for ch in text:
-            if ch not in self.char_to_idx:
-                idx = len(self.char_to_idx)
-                self.char_to_idx[ch] = idx
-                self.idx_to_char[idx] = ch
-                added = True
-        return added
-    
-    def fit_on_texts(self, texts):
-        """Expand vocabulary using a collection of texts."""
-        updated = False
-        for text in texts:
-            if self.add_text(text):
-                updated = True
-        return updated
-    
-    def save(self, path):
-        with open(path, 'w') as f:
-            json.dump({
-                'char_to_idx': self.char_to_idx,
-                'idx_to_char': {str(k): v for k, v in self.idx_to_char.items()},
-                'special_tokens': self.special_tokens
-            }, f)
-    
-    @classmethod
-    def load(cls, path):
-        with open(path, 'r') as f:
-            vocab = json.load(f)
-        return cls(vocab)
+    def forward(self, x):
+        """Add positional encoding to input embeddings."""
+        return x + self.pe[:, :x.size(1), :]
 
 
 class TransformerChatModel(nn.Module):
-    """
-    A simple transformer-based chat model.
-    """
+    """Simple transformer-based chat model."""
     
-    def __init__(self, vocab_size, d_model=256, nhead=8, num_layers=6, 
-                 dim_feedforward=1024, max_seq_length=512, dropout=0.1):
+    def __init__(self, vocab_size, d_model=256, nhead=8, num_layers=6, max_seq_length=512, dropout=0.1):
         super().__init__()
         
+        # Store hyperparameters as instance attributes
+        self.vocab_size = vocab_size
         self.d_model = d_model
         self.nhead = nhead
         self.num_layers = num_layers
-        self.dim_feedforward = dim_feedforward
         self.max_seq_length = max_seq_length
-        self.dropout_rate = dropout
+        self.dropout = dropout
         
+        # Model components
         self.embedding = nn.Embedding(vocab_size, d_model)
-        self.pos_encoding = nn.Parameter(torch.zeros(1, max_seq_length, d_model))
+        self.pos_encoder = PositionalEncoding(d_model, max_seq_length)
         
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
-            dim_feedforward=dim_feedforward,
+            dim_feedforward=d_model * 4,
             dropout=dropout,
             batch_first=True
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        self.output_layer = nn.Linear(d_model, vocab_size)
-        self.dropout = nn.Dropout(dropout)
+        self.fc_out = nn.Linear(d_model, vocab_size)
         
         self._init_weights()
     
     def _init_weights(self):
-        nn.init.normal_(self.embedding.weight, std=0.02)
-        nn.init.normal_(self.pos_encoding, std=0.02)
-        nn.init.normal_(self.output_layer.weight, std=0.02)
-        nn.init.zeros_(self.output_layer.bias)
+        """Initialize weights."""
+        initrange = 0.1
+        self.embedding.weight.data.uniform_(-initrange, initrange)
+        self.fc_out.bias.data.zero_()
+        self.fc_out.weight.data.uniform_(-initrange, initrange)
     
-    def forward(self, x, attention_mask=None):
-        """
-        Args:
-            x: Input token indices [batch_size, seq_length]
-            attention_mask: Padding mask [batch_size, seq_length]
+    def generate_square_subsequent_mask(self, sz):
+        """Generate causal mask for autoregressive generation."""
+        mask = torch.triu(torch.ones(sz, sz), diagonal=1).bool()
+        return mask
+    
+    def forward(self, src):
+        """Forward pass through the model."""
+        seq_len = src.size(1)
         
-        Returns:
-            logits: [batch_size, seq_length, vocab_size]
-        """
-        batch_size, seq_length = x.shape
+        # Create causal mask
+        mask = self.generate_square_subsequent_mask(seq_len).to(src.device)
         
-        # Embedding + positional encoding
-        x = self.embedding(x) * (self.d_model ** 0.5)
-        x = x + self.pos_encoding[:, :seq_length, :]
-        x = self.dropout(x)
+        # Embed and add positional encoding
+        src = self.embedding(src) * math.sqrt(self.d_model)
+        src = self.pos_encoder(src)
         
-        # Create causal mask for autoregressive generation
-        causal_mask = torch.triu(torch.ones(seq_length, seq_length), diagonal=1).bool()
-        causal_mask = causal_mask.to(x.device)
+        # Pass through transformer with causal mask
+        output = self.transformer(src, mask=mask, is_causal=True)
         
-        # Transform
-        x = self.transformer(x, mask=causal_mask, is_causal=True)
-        
-        # Output projection
-        logits = self.output_layer(x)
+        # Project to vocabulary
+        logits = self.fc_out(output)
         
         return logits
     
-    def generate(self, tokenizer, prompt, max_length=200, temperature=1.0, top_k=50, device=None):
-        """
-        Generate text given a prompt.
-        
-        Args:
-            tokenizer: Tokenizer instance
-            prompt: Input text string
-            max_length: Maximum length of generated sequence
-            temperature: Sampling temperature
-            top_k: Top-k sampling parameter
-            device: Device to run on
-        
-        Returns:
-            Generated text string
-        """
-        if device is None:
-            device = next(self.parameters()).device
-        
+    def generate(self, tokenizer, prompt, max_length=100, temperature=1.0, device='cpu'):
+        """Generate text given a prompt."""
         self.eval()
         
         # Encode prompt
-        input_ids = [tokenizer.char_to_idx['<BOS>']]
-        input_ids.extend(tokenizer.encode(prompt))
-        if '<SEP>' in tokenizer.char_to_idx:
-            input_ids.append(tokenizer.char_to_idx['<SEP>'])
-        input_ids = torch.tensor([input_ids], dtype=torch.long, device=device)
+        bos_id = tokenizer.char_to_idx['<BOS>']
+        eos_id = tokenizer.char_to_idx['<EOS>']
+        sep_id = tokenizer.char_to_idx['<SEP>']
         
+        token_ids = [bos_id]
+        token_ids.extend(tokenizer.encode(prompt))
+        token_ids.append(sep_id)
+        
+        # Generate tokens
         with torch.no_grad():
             for _ in range(max_length):
-                if input_ids.shape[1] >= self.max_seq_length:
+                input_ids = torch.tensor([token_ids], dtype=torch.long).to(device)
+                
+                # Get predictions
+                logits = self(input_ids)
+                next_token_logits = logits[0, -1, :] / temperature
+                
+                # Sample next token
+                probs = torch.softmax(next_token_logits, dim=-1)
+                next_token = torch.multinomial(probs, num_samples=1).item()
+                
+                # Stop if EOS
+                if next_token == eos_id:
                     break
                 
-                # Forward pass
-                logits = self.forward(input_ids)
-                
-                # Get logits for the last token
-                next_token_logits = logits[:, -1, :] / temperature
-                
-                # Apply top-k filtering
-                if top_k > 0:
-                    indices_to_remove = next_token_logits < torch.topk(next_token_logits, top_k)[0][..., -1, None]
-                    next_token_logits[indices_to_remove] = float('-inf')
-                
-                # Sample from the distribution
-                probs = F.softmax(next_token_logits, dim=-1)
-                next_token = torch.multinomial(probs, num_samples=1)
-                
-                # Stop if EOS token
-                if next_token.item() == tokenizer.char_to_idx['<EOS>']:
-                    break
-                
-                # Append to input
-                input_ids = torch.cat([input_ids, next_token], dim=1)
+                token_ids.append(next_token)
         
-        # Decode
-        generated_ids = input_ids[0].tolist()[1:]  # Skip BOS token
-        generated_text = tokenizer.decode(generated_ids)
+        # Decode response (everything after SEP token)
+        sep_idx = token_ids.index(sep_id)
+        response_ids = token_ids[sep_idx + 1:]
+        response = tokenizer.decode(response_ids)
         
-        # Remove prompt portion
-        if '<SEP>' in generated_text:
-            generated_text = generated_text.split('<SEP>', 1)[-1]
-        
-        for token in ['<PAD>', '<BOS>', '<EOS>']:
-            generated_text = generated_text.replace(token, '')
-        
-        return generated_text.strip()
+        return response
     
-    def save_checkpoint(self, path, tokenizer=None, optimizer=None, epoch=None, loss=None):
-        """Save model checkpoint."""
+    def save_checkpoint(self, path, tokenizer=None, optimizer=None, epoch=0, loss=0.0, iteration=None):
+        """Save model checkpoint with all training state."""
         checkpoint = {
+            'epoch': epoch,
+            'iteration': iteration if iteration is not None else 0,
             'model_state_dict': self.state_dict(),
+            'loss': loss,
             'model_config': {
+                'vocab_size': self.vocab_size,
                 'd_model': self.d_model,
                 'nhead': self.nhead,
                 'num_layers': self.num_layers,
-                'dim_feedforward': self.dim_feedforward,
                 'max_seq_length': self.max_seq_length,
-                'dropout': self.dropout_rate,
+                'dropout': self.dropout,
             }
         }
         
+        if tokenizer is not None:
+            checkpoint['tokenizer'] = {
+                'char_to_idx': tokenizer.char_to_idx,
+                'idx_to_char': tokenizer.idx_to_char
+            }
+        
         if optimizer is not None:
-            checkpoint['optimizer_state_dict'] = optimizer.state_dict()
-        if epoch is not None:
-            checkpoint['epoch'] = epoch
-        if loss is not None:
-            checkpoint['loss'] = loss
+            checkpoint['optimizer'] = optimizer.state_dict()
         
         torch.save(checkpoint, path)
-        
-        # Save tokenizer separately
-        if tokenizer is not None:
-            tokenizer_path = Path(path).parent / 'tokenizer.json'
-            tokenizer.save(tokenizer_path)
     
     @classmethod
-    def load_checkpoint(cls, path, vocab_size=None, device=None):
+    def load_checkpoint(cls, path, vocab_size=None, device='cpu'):
         """Load model from checkpoint."""
-        if device is None:
-            device = get_device()
-        
         checkpoint = torch.load(path, map_location=device)
         
-        # Get vocab size from the model state dict if not provided
-        if vocab_size is None:
-            vocab_size = checkpoint['model_state_dict']['embedding.weight'].shape[0]
+        # Get model config
+        if 'model_config' in checkpoint:
+            config = checkpoint['model_config']
+            model = cls(**config)
+        elif vocab_size is not None:
+            model = cls(vocab_size=vocab_size)
+        else:
+            raise ValueError("Either checkpoint must contain model_config or vocab_size must be provided")
         
-        # Create model
-        config = checkpoint.get('model_config', {})
-        model = cls(
-            vocab_size=vocab_size,
-            d_model=config.get('d_model', 256),
-            nhead=config.get('nhead', 8),
-            num_layers=config.get('num_layers', 6),
-            dim_feedforward=config.get('dim_feedforward', 1024),
-            max_seq_length=config.get('max_seq_length', 512),
-            dropout=config.get('dropout', 0.1),
-        )
-        
+        # Load weights
         model.load_state_dict(checkpoint['model_state_dict'])
         model.to(device)
-        model.eval()
         
         return model, checkpoint
+
+
+class SimpleTokenizer:
+    """Character-level tokenizer with special tokens."""
+    
+    def __init__(self):
+        self.char_to_idx = {
+            '<PAD>': 0,
+            '<BOS>': 1,
+            '<EOS>': 2,
+            '<SEP>': 3,
+            '<UNK>': 4,
+        }
+        self.idx_to_char = {v: k for k, v in self.char_to_idx.items()}
+        self.next_idx = 5
+    
+    def fit_on_texts(self, texts):
+        """Add characters from texts to vocabulary."""
+        for text in texts:
+            for char in text:
+                if char not in self.char_to_idx:
+                    self.char_to_idx[char] = self.next_idx
+                    self.idx_to_char[self.next_idx] = char
+                    self.next_idx += 1
+    
+    def encode(self, text):
+        """Encode text to list of token IDs."""
+        return [self.char_to_idx.get(char, self.char_to_idx['<UNK>']) for char in text]
+    
+    def decode(self, token_ids):
+        """Decode list of token IDs to text."""
+        chars = [self.idx_to_char.get(idx, '<UNK>') for idx in token_ids]
+        # Filter out special tokens
+        chars = [c for c in chars if c not in ['<PAD>', '<BOS>', '<EOS>', '<SEP>', '<UNK>']]
+        return ''.join(chars)
+    
+    @property
+    def vocab_size(self):
+        """Return vocabulary size."""
+        return len(self.char_to_idx)
+    
+    def save(self, path):
+        """Save tokenizer to JSON file."""
+        import json
+        data = {
+            'char_to_idx': self.char_to_idx,
+            'idx_to_char': {int(k): v for k, v in self.idx_to_char.items()},
+            'next_idx': self.next_idx
+        }
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    
+    @classmethod
+    def load(cls, path):
+        """Load tokenizer from JSON file."""
+        import json
+        with open(path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        
+        tokenizer = cls()
+        tokenizer.char_to_idx = data['char_to_idx']
+        tokenizer.idx_to_char = {int(k): v for k, v in data['idx_to_char'].items()}
+        
+        # Handle legacy tokenizers without next_idx
+        if 'next_idx' in data:
+            tokenizer.next_idx = data['next_idx']
+        else:
+            # Reconstruct next_idx from existing vocabulary
+            tokenizer.next_idx = max(tokenizer.idx_to_char.keys()) + 1
+        
+        return tokenizer
+
+        
+        return tokenizer
+
+
+def get_device():
+    """Get the best available device."""
+    if torch.cuda.is_available():
+        return torch.device('cuda')
+    elif torch.backends.mps.is_available():
+        return torch.device('mps')
+    else:
+        return torch.device('cpu')
