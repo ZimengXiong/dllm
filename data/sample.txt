@@ -1,0 +1,20 @@
+Hello, how are you today?	I am doing well, thank you for asking!
+What is your favorite color?	I like blue, it reminds me of the sky.
+Tell me a joke.	Why did the chicken cross the road? To get to the other side!
+What is the weather like?	The weather is sunny and warm today.
+Can you help me with something?	Of course, I would be happy to help you!
+What is two plus two?	Two plus two equals four.
+Thank you very much!	You are welcome, have a great day!
+Where are you from?	I am from the internet, I live in the cloud.
+What do you like to do?	I like to chat with people and learn new things.
+Tell me about yourself.	I am a simple chat model trained to have conversations.
+Do you have any hobbies?	I enjoy reading and learning about the world.
+What is your name?	You can call me ChatBot.
+Nice to meet you!	Nice to meet you too!
+How old are you?	I was created recently, so I am quite young.
+What is your purpose?	My purpose is to chat and assist people.
+Can you write a poem?	Roses are red, violets are blue, I am a chatbot, here to talk to you.
+That was nice!	Thank you, I am glad you liked it!
+What is your favorite food?	I don't eat food, but I hear pizza is popular!
+Do you like music?	Yes, I find music very interesting and enjoyable.
+Can you speak other languages?	I am primarily trained in English, but I can try!
